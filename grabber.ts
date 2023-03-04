@@ -14,7 +14,7 @@ const kodikInstance = axios.create({
 export const grabberFunction = async () => {
   try {
     let page =
-      "https://kodikapi.com/list?token=3ddc0f812cc0ca5eefa8c6e49d56e97b&types=anime,anime-serial";
+      `https://kodikapi.com/list?token=${kodikToken}&types=anime,anime-serial`;
     let complete = false;
 
     while (!complete) {

@@ -1,10 +1,10 @@
-import axios, { AxiosError } from "axios";
+import axios, { AxiosError, AxiosResponse } from "axios";
 import dotenv from "dotenv";
 import { animeCol, playerLinksCol } from "./mongodb";
 import rateLimit from "axios-rate-limit";
 import * as winston from "winston";
 import { TitleDetails } from "./models/imdb";
-import {  PlayerLink } from "./models/player-link";
+import { List, PlayerLink } from "./models/player-link";
 
 dotenv.config();
 
@@ -15,6 +15,10 @@ const limitedAxios = rateLimit(axios.create(), {
 });
 
 const logger = winston.createLogger({
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
   transports: [
     new winston.transports.File({
       level: "error",
@@ -24,6 +28,10 @@ const logger = winston.createLogger({
 });
 
 const imdbLogger = winston.createLogger({
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
   transports: [
     new winston.transports.File({
       level: "error",
@@ -32,26 +40,60 @@ const imdbLogger = winston.createLogger({
   ],
 });
 
+const fetchList = async (page: string): Promise<[List | null, any]> => {
+  try {
+    const res = await axios.get<List>(page);
+
+    return [res.data, null];
+  } catch (error) {
+    const e = error as AxiosError;
+    return [null, e.response?.data];
+  }
+};
+
+const fetchImdb = async (
+  imdbId: string
+): Promise<[TitleDetails | null, any]> => {
+  try {
+    const res = await limitedAxios.get<TitleDetails>(
+      `http://localhost:3005/title/${imdbId}`
+    );
+    return [res.data, null];
+  } catch (error) {
+    const e = error as AxiosError;
+    return [null, e.response?.data];
+  }
+};
+
 export const grabberFunction = async () => {
   try {
-    let page = `https://kodikapi.com/list?token=${kodikToken}&types=anime,anime-serial&sort=imdb_rating&with_material_data=true&limit=100`;
+    let page = `https://kodikapi.com/list?token=${kodikToken}&types=anime,anime-serial&with_material_data=true&limit=100`;
     let complete = false;
 
-    // while (!complete) {
-    //   const res = await axios.get<List>(page);
+    while (!complete) {
+      const [res, err] = await fetchList(page);
 
-    //   res.data.results.map(async (anime) => {
-    //     await playerLinksCol.replaceOne({ id: anime.id }, anime, {
-    //       upsert: true,
-    //     });
-    //   });
+      if (err) {
+        logger.error(err);
+        continue;
+      }
 
-    //   if (res.data.next_page === null) {
-    //     complete = true;
-    //   } else {
-    //     page = res.data.next_page;
-    //   }
-    // }
+      if (res === null) {
+        continue;
+      }
+
+      res.results.map(async (anime) => {
+        await playerLinksCol.replaceOne({ id: anime.id }, anime, {
+          upsert: true,
+        });
+      });
+
+      if (res.next_page === null) {
+        complete = true;
+      } else {
+        page = res.next_page;
+      }
+    }
 
     const links = await playerLinksCol
       .aggregate([
@@ -77,16 +119,16 @@ export const grabberFunction = async () => {
       .toArray();
 
     links.map(async (link) => {
-      const animeRes = await limitedAxios
-        .get<TitleDetails>(`http://localhost:3005/title/${link.imdb_id}`)
-        .catch((err) => {
-          const e = err as AxiosError;
-          imdbLogger.error(e);
-        });
+      const [animeRes, err] = await fetchImdb(link.imdb_id);
+
+      if (err) {
+        imdbLogger.error(err);
+        return;
+      }
 
       if (!animeRes) return;
 
-      const anime = animeRes.data;
+      const anime = animeRes;
 
       const seasons = await playerLinksCol
         .aggregate<PlayerLink>([
@@ -133,8 +175,10 @@ export const grabberFunction = async () => {
         { upsert: true }
       );
     });
+
+    console.log("parsed");
   } catch (err) {
     const e = err as Error;
-    logger.error(e.message);
+    logger.error(e);
   }
 };
